@@ -7,3 +7,5 @@ next-env.d.ts
 public/models/
 .claude/
 .vercel/
+.env*
+!.env.example

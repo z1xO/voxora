@@ -1,0 +1,6 @@
+# Too large to deploy; the app downloads the voice model from Hugging Face when these are absent.
+public/models
+.env.local
+.claude
+.next
+node_modules
