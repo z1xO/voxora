@@ -14,6 +14,42 @@ env.allowLocalModels = true;
 env.localModelPath = "/models/";
 env.allowRemoteModels = true;
 
+// Keep downloaded model files in the origin-private file system (OPFS). Browsers often refuse to put a
+// file this large into the Cache API, which otherwise means a full re-download on every visit (e.g. on
+// a hosted deployment, where public/models isn't available). OPFS writes only commit when the stream
+// closes, so an interrupted download can't leave a truncated model behind.
+const OPFS_DIR = "voxora-models";
+const opfsName = (key: string) => key.replace(/^https?:\/\//, "").replace(/[^a-z0-9._-]/gi, "_").slice(-200);
+
+async function modelDir() {
+  return (await navigator.storage.getDirectory()).getDirectoryHandle(OPFS_DIR, { create: true });
+}
+
+env.useCustomCache = true;
+env.customCache = {
+  async match(key: string) {
+    try {
+      const file = await (await (await modelDir()).getFileHandle(opfsName(key))).getFile();
+      return file.size ? new Response(file, { headers: { "content-length": String(file.size) } }) : undefined;
+    } catch {
+      return undefined; // not stored yet, or OPFS unavailable (some private windows)
+    }
+  },
+  async put(key: string, response: Response) {
+    try {
+      const writable = await (await (await modelDir()).getFileHandle(opfsName(key), { create: true })).createWritable();
+      // Stream to disk rather than copying the whole model in memory again; pipeTo closes (commits) the file.
+      if (response.body) await response.body.pipeTo(writable);
+      else {
+        await writable.write(await response.arrayBuffer());
+        await writable.close();
+      }
+    } catch (err) {
+      console.warn(`Couldn't store the voice model for next time: ${(err as Error).message}`);
+    }
+  },
+};
+
 let tts: KokoroTTS | null = null;
 let loading: Promise<void> | null = null;
 let current = 0;
@@ -33,9 +69,13 @@ async function hasWebGpu() {
   }
 }
 
-/** Removes this model's entries from the browser cache (a download interrupted mid-way can leave a truncated file there). */
+/** Removes this model's stored files (a damaged copy would otherwise fail on every load). */
 async function clearModelCache() {
   try {
+    await (await navigator.storage.getDirectory()).removeEntry(OPFS_DIR, { recursive: true });
+  } catch {}
+  try {
+    // Older versions used the Cache API; clear anything left there too.
     const cache = await caches.open("transformers-cache");
     for (const req of await cache.keys()) if (req.url.includes(MODEL_ID)) await cache.delete(req);
   } catch {}
